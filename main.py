@@ -1,3 +1,5 @@
+import os
+
 import telebot
 import openpyxl
 from telebot import types
@@ -5,13 +7,6 @@ from telebot import types
 BOT_TOKEN = '6562890122:AAGRPmeOMeBhs4PJU2Lg7vefahxXoNSppKo'
 bot = telebot.TeleBot(BOT_TOKEN)
 user_state = {}
-
-wb = openpyxl.Workbook()
-sheet = wb.active
-
-# Добавление заголовков
-headers = ["ФИО", "Статус", "Дата", "Сумма", "Номер Карты"]
-sheet.append(headers)
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.chat.id in user_state:
@@ -24,7 +19,8 @@ def start(message):
     button_download_file = types.InlineKeyboardButton("Посмотреть страницу с заказами", callback_data="show_pages_")
     # button_edit_purchase = types.InlineKeyboardButton(text="Изменить данные покупки", callback_data="edit_purchase")
     add_page_button = types.InlineKeyboardButton("Добавить сайт", callback_data='add_page')
-    markup.add(show_one_page,button_add_customer, button_find_customer, add_page_button,button_download_file)
+    download_page_button = types.InlineKeyboardButton("Загрузить файл", callback_data='upload_file')
+    markup.add(show_one_page,button_add_customer, button_find_customer, add_page_button,button_download_file,download_page_button)
     bot.reply_to(message, "Бот заказов! Выберите действие:", reply_markup=markup)
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     start_button = telebot.types.KeyboardButton(text='/start')
@@ -39,7 +35,7 @@ def cancel_handler(message):
         del user_state[user_id]
         bot.send_message(user_id, "Действие успешно отменено.")
         start(message)  # Вызываем обработчик команды /start после успешной отмены
-        bot.send_message(message.chat.id, "Действие отменено. Выберите действие:", reply_markup=start())
+        bot.send_message(message.chat.id, "Действие отменено. Выберите действие:", reply_markup=start(message))
 
     else:
         bot.reply_to(message, "Нет активных действий для отмены.")
@@ -60,15 +56,12 @@ def check_state(message):
         bot.send_message(user_id, "Вы находитесь в режиме поиска покупателя. Введите ФИО или отправьте /cancel для отмены.")
     else:
         bot.send_message(user_id, "Выберите действие:", reply_markup=start(message))
-
-
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith('download_file'))
 def download_file(call):
     try:
         user_data = user_state.get(call.message.chat.id, {})
-        if user_data.get("state") in ["add_customer", "find_customer"]:
-            bot.send_message(call.message.chat.id, "Сначала завершите текущее действие.")
+        if call.from_user.id in user_state:
+            bot.send_message(call.message.chat.id, "Вы уже выполняете другую операцию. Дождитесь ее завершения.")
             return
 
         document_path = 'example.xlsx'  # Путь к вашему файлу
@@ -76,6 +69,23 @@ def download_file(call):
             bot.send_document(call.message.chat.id, document)
     except Exception as e:
         bot.send_message(call.message.chat.id, f"Произошла ошибка: {e}")
+
+
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data == 'upload_file')
+def upload_file_callback(call):
+    if call.from_user.id in user_state:
+        bot.send_message(call.message.chat.id, "Вы уже выполняете другую операцию. Дождитесь ее завершения.")
+        return
+    msg = bot.send_message(call.message.chat.id, "Теперь отправьте файл.")
+    user_state[call.message.chat.id] = {"state": "upload_file"}
+    bot.register_next_step_handler(msg, upload_file)
+
+
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('show_page_'))
 def display_page_inline(call):
     if call.from_user.id in user_state:
@@ -204,7 +214,6 @@ def add_page_to_excel(message):
 # ----------------------------------------------------------- добавить страницу
 
 
-
 # добавить юзера
 def process_add_customer(message):
     try:
@@ -282,56 +291,71 @@ def process_find_customer(message):
             return
     except Exception as e:
         bot.reply_to(message, "Произошла ошибка: " + str(e))
-
-
-
-
 def display_page(message):
     user_data = user_state.get(message.chat.id, {})
     if user_data.get("state") == "display_page":
         sheet_name = user_data.get("sheet_name").replace("show_page_", "")
         data = message.text.split()
         try:
-            if data[0] == '/cancel':
+            if len(data) == 1 and data[0] == '/cancel':
                 del user_state[message.from_user.id]
                 bot.reply_to(message, "Действие успешно отменено.")
                 return
-            workbook = openpyxl.load_workbook('example.xlsx')
-            sheet = workbook[sheet_name]
-
-            column_headers = sheet[1]
-            column_names = [cell.value for cell in column_headers]
-
-            rows_data = []
-            for row in sheet.iter_rows(min_row=2, values_only=True):
-                rows_data.append(row)
-
-            if rows_data:
-                response = "Содержимое страницы по строкам:\n\n"
-                for row_data in rows_data:
-                    row_values = "\n".join(f"{column}: {value}" for column, value in zip(column_names, row_data))
-                    response += f"{row_values}\n\n"
-                bot.send_message(message.chat.id, response)
-
             else:
-                bot.send_message(message.chat.id, "Страница пуста.")
-                return
+                workbook = openpyxl.load_workbook('example.xlsx')
+                sheet = workbook[sheet_name]
 
-            del user_state[message.chat.id]  # Удаление состояния пользователя
+                column_headers = sheet[1]
+                column_names = [cell.value for cell in column_headers]
+
+                rows_data = []
+                for row in sheet.iter_rows(min_row=2, values_only=True):
+                    rows_data.append(row)
+
+                if rows_data:
+                    response = "Содержимое страницы по строкам:\n\n"
+                    for row_data in rows_data:
+                        row_values = "\n".join(f"{column}: {value}" for column, value in zip(column_names, row_data))
+                        response += f"{row_values}\n\n"
+                    bot.send_message(message.chat.id, response)
+                else:
+                    bot.send_message(message.chat.id, "Страница пуста.")
         except Exception as e:
             bot.send_message(message.chat.id, f"Произошла ошибка: {e}")
             bot.send_message(message.chat.id, "/start")
-
         finally:
-            del user_state[message.chat.id]
+            del user_state[message.chat.id]  # Удаление состояния пользователя
+
+
+
+def upload_file(message):
+    try:
+        user_data = user_state.get(message.chat.id, {})
+        # data = message.text.split()
+        if user_data.get("state") == "upload_file":
+            if  message.text == '/cancel':
+                del user_state[message.from_user.id]
+                bot.reply_to(message, "Действие успешно отменено.")
+                return
+
+            user_id = message.chat.id
+            file_info = bot.get_file(message.document.file_id)
+            file_name = message.document.file_name
+            if file_name != "example.xlsx":
+                bot.reply_to(message, "Неправильное имя файла. Пожалуйста, загрузите файл с именем 'example.xlsx'.")
+                return
+            file_path = os.path.join("/Users/maksimmalysev/PycharmProjects/workBot/", file_name)
+            downloaded_file = bot.download_file(file_info.file_path)
+            with open(file_path, 'wb') as new_file:
+                new_file.write(downloaded_file)
+            bot.reply_to(message, f"Файл {file_name} успешно загружен и сохранен на сервере.")
+            user_state[user_id]['state'] = ''  # Устанавливаем состояние "файл загружен"
+        else:
+            bot.reply_to(message, "Ошибка: неправильное состояние пользователя.")
+            bot.send_message(message.chat.id, "/start")
             return
-    else:
-        bot.send_message(message.chat.id, "Ошибка: неправильное состояние пользователя.")
-        bot.send_message(message.chat.id, "/start")
-        return
-
-
-
+    except Exception as e:
+        bot.reply_to(message, f"Произошла ошибка: {e}")
 
 
 # Основной цикл для получения обновлений
